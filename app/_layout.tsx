@@ -1,39 +1,70 @@
-import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
-import { useFonts } from 'expo-font';
 import { Stack } from 'expo-router';
-import * as SplashScreen from 'expo-splash-screen';
-import { StatusBar } from 'expo-status-bar';
+import { PaperProvider } from 'react-native-paper';
 import { useEffect } from 'react';
-import 'react-native-reanimated';
-
-import { useColorScheme } from '@/hooks/useColorScheme';
-
-// Prevent the splash screen from auto-hiding before asset loading is complete.
-SplashScreen.preventAutoHideAsync();
+import { useFonts } from 'expo-font';
+import * as SplashScreen from 'expo-splash-screen';
 
 export default function RootLayout() {
-  const colorScheme = useColorScheme();
-  const [loaded] = useFonts({
-    SpaceMono: require('../assets/fonts/SpaceMono-Regular.ttf'),
+  const [fontsLoaded] = useFonts({
+    // Add any custom fonts here if needed
   });
 
   useEffect(() => {
-    if (loaded) {
+    if (fontsLoaded) {
       SplashScreen.hideAsync();
     }
-  }, [loaded]);
+  }, [fontsLoaded]);
 
-  if (!loaded) {
+  if (!fontsLoaded) {
     return null;
   }
 
   return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
+    <PaperProvider>
       <Stack>
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen name="+not-found" />
+        <Stack.Screen 
+          name="index" 
+          options={{ 
+            title: 'SlideMaker',
+            headerShown: false 
+          }} 
+        />
+        <Stack.Screen 
+          name="upload" 
+          options={{ 
+            title: 'Upload Files',
+            presentation: 'modal'
+          }} 
+        />
+        <Stack.Screen 
+          name="preview" 
+          options={{ 
+            title: 'Preview Slides',
+            presentation: 'modal'
+          }} 
+        />
+        <Stack.Screen 
+          name="presentation" 
+          options={{ 
+            title: 'Presentation',
+            presentation: 'fullScreenModal'
+          }} 
+        />
+        <Stack.Screen 
+          name="my-slides" 
+          options={{ 
+            title: 'My Slides',
+            headerShown: true
+          }} 
+        />
+        <Stack.Screen 
+          name="edit" 
+          options={{ 
+            title: 'Edit Slide',
+            presentation: 'modal'
+          }} 
+        />
       </Stack>
-      <StatusBar style="auto" />
-    </ThemeProvider>
+    </PaperProvider>
   );
 }
