@@ -29,6 +29,7 @@
         <category android:name="android.intent.category.BROWSABLE"/>
         <data android:scheme="myapp"/>
         <data android:scheme="com.yuvaraj2775.slidemakerex"/>
+        <data android:scheme="exp+slidemakerex"/>
       </intent-filter>
     </activity>
   </application>

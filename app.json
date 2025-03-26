@@ -33,10 +33,20 @@
           "resizeMode": "contain",
           "backgroundColor": "#ffffff"
         }
-      ]
+      ],
+      "expo-audio"
     ],
     "experiments": {
       "typedRoutes": true
-    }
+    },
+    "extra": {
+      "router": {
+        "origin": false
+      },
+      "eas": {
+        "projectId": "0734c97d-109d-4d87-b845-08b7c6e202a5"
+      }
+    },
+    "owner": "yuvaraj2775"
   }
 }

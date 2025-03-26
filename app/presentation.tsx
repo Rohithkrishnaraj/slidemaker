@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { View, Image, Dimensions, TouchableOpacity, StatusBar, ScrollView, TextStyle, ViewStyle } from 'react-native';
+import { useState, useEffect, useRef } from 'react';
+import { View, Image, Dimensions, TouchableOpacity, StatusBar, ScrollView, TextStyle, ViewStyle, Platform, Animated, PanResponder, StyleSheet } from 'react-native';
 import { Text, IconButton } from 'react-native-paper';
 import { router, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -7,10 +7,11 @@ import { Slide } from '../utils/excelProcessor';
 import * as Speech from 'expo-speech';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import React from 'react';
+import { VolumeManager } from 'react-native-volume-manager';
+import * as Brightness from 'expo-brightness';
 
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 
-// Add highlight colors constant
 const HIGHLIGHT_COLORS = [
   '#ffeb3b', // Yellow
   '#4CAF50', // Green
@@ -19,6 +20,63 @@ const HIGHLIGHT_COLORS = [
   '#E91E63', // Pink
   '#9C27B0', // Purple
 ];
+
+// Visual-only slider component (non-interactive)
+interface VisualSliderProps {
+  value: number;
+  minimumTrackTintColor: string;
+  maximumTrackTintColor: string;
+  thumbTintColor: string;
+  style?: ViewStyle;
+}
+
+const VisualSlider: React.FC<VisualSliderProps> = ({
+  value,
+  minimumTrackTintColor,
+  maximumTrackTintColor,
+  thumbTintColor,
+  style
+}) => {
+  const [trackWidth, setTrackWidth] = useState(0);
+  
+  // Calculate thumb position based on value
+  const thumbPosition = value * trackWidth;
+  
+  return (
+    <View 
+      style={[styles.sliderContainer, style]}
+      onLayout={(event) => {
+        const { width } = event.nativeEvent.layout;
+        setTrackWidth(width);
+      }}
+    >
+      {/* Track background */}
+      <View style={[styles.track, { backgroundColor: maximumTrackTintColor }]}>
+        {/* Filled track */}
+        <View
+          style={[
+            styles.filledTrack,
+            {
+              backgroundColor: minimumTrackTintColor,
+              width: `${value * 100}%`
+            }
+          ]}
+        />
+      </View>
+      
+      {/* Thumb */}
+      <View
+        style={[
+          styles.thumb,
+          {
+            backgroundColor: thumbTintColor,
+            transform: [{ translateX: thumbPosition }]
+          }
+        ]}
+      />
+    </View>
+  );
+};
 
 export default function PresentationScreen() {
   const params = useLocalSearchParams();
@@ -31,25 +89,29 @@ export default function PresentationScreen() {
   const [isTextExpanded, setIsTextExpanded] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [shouldAutoAdvance, setShouldAutoAdvance] = useState(true);
+  const [volume, setVolume] = useState(0.5);
+  const [brightness, setBrightness] = useState(0.5);
+  const [showSliders, setShowSliders] = useState(false);
+  const slideAnim = useRef(new Animated.Value(-100)).current;
+  const autoCloseTimer = useRef<NodeJS.Timeout | null>(null);
+
+  // Step size for button controls
+  const VOLUME_STEP = 0.05;
+  const BRIGHTNESS_STEP = 0.05;
 
   // Initialize and cleanup orientation handling
   useEffect(() => {
     const setupOrientation = async () => {
-      // Allow all orientations for this screen
       await ScreenOrientation.unlockAsync();
       
-      // Set up orientation change listener
       const subscription = ScreenOrientation.addOrientationChangeListener(({ orientationInfo }) => {
         const isLandscapeOrientation = 
           orientationInfo.orientation === ScreenOrientation.Orientation.LANDSCAPE_LEFT ||
           orientationInfo.orientation === ScreenOrientation.Orientation.LANDSCAPE_RIGHT;
         setIsLandscape(isLandscapeOrientation);
-        // Set text expanded mode to true by default in landscape
         if (isLandscapeOrientation) {
           setIsTextExpanded(true);
         }
-        
-        // Hide status bar in landscape
         StatusBar.setHidden(isLandscapeOrientation);
       });
 
@@ -60,10 +122,8 @@ export default function PresentationScreen() {
 
     setupOrientation();
 
-    // Cleanup function
     return () => {
       const cleanup = async () => {
-        // Reset orientation to portrait when leaving
         await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT);
         StatusBar.setHidden(false);
         Speech.stop();
@@ -72,15 +132,51 @@ export default function PresentationScreen() {
     };
   }, []);
 
+  // Initialize volume and brightness
+  useEffect(() => {
+    const initializeSettings = async () => {
+      try {
+        // Request brightness permissions
+        const { status } = await Brightness.requestPermissionsAsync();
+        if (status !== 'granted') {
+          console.warn('Brightness permission not granted');
+          return;
+        }
+
+        // Initialize volume
+        const { volume: initialVolume } = await VolumeManager.getVolume();
+        setVolume(initialVolume);
+
+        // Disable native volume UI
+        VolumeManager.showNativeVolumeUI({ enabled: false });
+
+        // Listen for volume changes
+        const volumeListener = VolumeManager.addVolumeListener((result) => {
+          setVolume(result.volume);
+        });
+
+        // Initialize brightness
+        const currentBrightness = await Brightness.getBrightnessAsync();
+        setBrightness(currentBrightness);
+
+        return () => {
+          volumeListener.remove();
+        };
+      } catch (error) {
+        console.error('Error initializing settings:', error);
+      }
+    };
+
+    initializeSettings();
+  }, []);
+
   // Parse slides data
   useEffect(() => {
     if (params.slides) {
       try {
         const parsedSlides = JSON.parse(params.slides as string);
-        // Ensure we have an array of slides
         const slidesArray = Array.isArray(parsedSlides) ? parsedSlides : [parsedSlides];
         setSlides(slidesArray);
-        // Start playing if it's a group presentation
         if (params.isSingleSlide === 'false') {
           setIsPlaying(true);
         }
@@ -90,88 +186,167 @@ export default function PresentationScreen() {
     }
   }, [params.slides, params.isSingleSlide]);
 
-  // Handle TTS and autoplay together
+  // Separate useEffect for handling TTS on slide change
   useEffect(() => {
     const playVoice = async () => {
       await Speech.stop();
-      
       const currentVoiceText = slides[currentSlide]?.backgroundVoice;
+      
       if (currentVoiceText && !isVoiceMuted) {
         try {
           setIsSpeaking(true);
           await Speech.speak(currentVoiceText, {
-            volume: 0.0,
+            volume: volume,
             onDone: () => {
               setIsSpeaking(false);
-              // Move to next slide after TTS completes and wait 2 seconds
-              if (isPlaying) {
-                setTimeout(() => {
-                  if (isPlaying) {
-                    setCurrentSlide(prev => {
-                      if (prev >= slides.length - 1) {
-                        setIsPlaying(false);
-                        return prev;
-                      }
-                      return prev + 1;
-                    });
-                  }
-                }, 2000);
-              }
             },
             onError: () => {
               setIsSpeaking(false);
-              // If TTS fails, still move to next slide after 2 seconds
-              if (isPlaying) {
-                setTimeout(() => {
-                  if (isPlaying) {
-                    setCurrentSlide(prev => {
-                      if (prev >= slides.length - 1) {
-                        setIsPlaying(false);
-                        return prev;
-                      }
-                      return prev + 1;
-                    });
-                  }
-                }, 2000);
-              }
             }
           });
         } catch (error) {
           console.error('Error playing voice:', error);
           setIsSpeaking(false);
-          // If TTS fails, still move to next slide after 2 seconds
-          if (isPlaying) {
-            setTimeout(() => {
-              if (isPlaying) {
-                setCurrentSlide(prev => {
-                  if (prev >= slides.length - 1) {
-                    setIsPlaying(false);
-                    return prev;
-                  }
-                  return prev + 1;
-                });
-              }
-            }, 2000);
-          }
         }
-      } else if (isPlaying) {
-        // If no TTS or muted, move to next slide after 2 seconds
-        setTimeout(() => {
-          if (isPlaying) {
-            setCurrentSlide(prev => {
-              if (prev >= slides.length - 1) {
-                setIsPlaying(false);
-                return prev;
-              }
-              return prev + 1;
-            });
+      }
+    };
+
+    playVoice();
+  }, [currentSlide, slides, isVoiceMuted]);
+
+  // Separate useEffect for handling autoplay
+  useEffect(() => {
+    let timeoutId: NodeJS.Timeout;
+    
+    const handleAutoPlay = async () => {
+      if (!isPlaying) return;
+
+      const currentVoiceText = slides[currentSlide]?.backgroundVoice;
+      
+      if (currentVoiceText && !isVoiceMuted) {
+        // Wait for TTS to finish before proceeding
+        await new Promise<void>((resolve) => {
+          const checkSpeaking = setInterval(() => {
+            if (!isSpeaking) {
+              clearInterval(checkSpeaking);
+              resolve();
+            }
+          }, 100);
+        });
+      }
+
+      // After TTS is done (or if there was no TTS), wait 2 seconds before next slide
+      // Only schedule next slide if we're still in autoplay mode
+      if (isPlaying) {
+        timeoutId = setTimeout(() => {
+          // Double check we're still in autoplay mode when timeout fires
+          if (isPlaying && currentSlide < slides.length - 1) {
+            setCurrentSlide(prev => prev + 1);
+          } else {
+            setIsPlaying(false);
           }
         }, 2000);
       }
     };
 
-    playVoice();
-  }, [currentSlide, slides, isVoiceMuted, isPlaying]);
+    handleAutoPlay();
+
+    return () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    };
+  }, [currentSlide, slides, isVoiceMuted, isPlaying, isSpeaking]);
+
+  // Update TTS volume without restarting
+  useEffect(() => {
+    // No need to do anything here since we don't want to restart TTS on volume change
+  }, [volume]);
+
+  // Button handlers for volume control
+  const increaseVolume = () => {
+    const newVolume = Math.min(1, volume + VOLUME_STEP);
+    setVolume(newVolume);
+    updateVolume(newVolume);
+    resetAutoCloseTimer();
+  };
+
+  const decreaseVolume = () => {
+    const newVolume = Math.max(0, volume - VOLUME_STEP);
+    setVolume(newVolume);
+    updateVolume(newVolume);
+    resetAutoCloseTimer();
+  };
+
+  // Button handlers for brightness control
+  const increaseBrightness = () => {
+    const newBrightness = Math.min(1, brightness + BRIGHTNESS_STEP);
+    setBrightness(newBrightness);
+    updateBrightness(newBrightness);
+    resetAutoCloseTimer();
+  };
+
+  const decreaseBrightness = () => {
+    const newBrightness = Math.max(0, brightness - BRIGHTNESS_STEP);
+    setBrightness(newBrightness);
+    updateBrightness(newBrightness);
+    resetAutoCloseTimer();
+  };
+
+  // Update system volume
+  const updateVolume = (newValue: number) => {
+    VolumeManager.setVolume(newValue, {
+      type: Platform.OS === 'android' ? 'music' : undefined,
+      showUI: false,
+      playSound: false,
+    }).catch(error => {
+      console.error('Error setting volume:', error);
+    });
+  };
+
+  // Update system brightness
+  const updateBrightness = (newValue: number) => {
+    Brightness.setBrightnessAsync(newValue).catch(error => {
+      console.error('Error setting brightness:', error);
+    });
+  };
+
+  // Toggle sliders visibility with animation
+  const toggleSliders = () => {
+    if (showSliders) {
+      Animated.timing(slideAnim, {
+        toValue: -100,
+        duration: 300,
+        useNativeDriver: true,
+      }).start(() => setShowSliders(false));
+    } else {
+      setShowSliders(true);
+      Animated.timing(slideAnim, {
+        toValue: 0,
+        duration: 300,
+        useNativeDriver: true,
+      }).start();
+    }
+
+    // Reset auto-close timer
+    resetAutoCloseTimer();
+  };
+
+  // Reset auto-close timer on interaction
+  const resetAutoCloseTimer = () => {
+    if (autoCloseTimer.current) {
+      clearTimeout(autoCloseTimer.current);
+    }
+    autoCloseTimer.current = setTimeout(() => {
+      if (showSliders) {
+        Animated.timing(slideAnim, {
+          toValue: -100,
+          duration: 300,
+          useNativeDriver: true,
+        }).start(() => setShowSliders(false));
+      }
+    }, 3000);
+  };
 
   const handlePrevious = async () => {
     await Speech.stop();
@@ -195,6 +370,11 @@ export default function PresentationScreen() {
 
   const togglePlayPause = () => {
     setIsPlaying(!isPlaying);
+    // Stop TTS when autoplay is stopped
+    if (isPlaying) {
+      Speech.stop();
+      setIsSpeaking(false);
+    }
   };
 
   const toggleControls = () => {
@@ -212,7 +392,7 @@ export default function PresentationScreen() {
       try {
         setIsSpeaking(true);
         await Speech.speak(currentVoiceText, {
-          volume: 0.0,
+          volume: volume,
           onDone: () => {
             setIsSpeaking(false);
           },
@@ -251,7 +431,6 @@ export default function PresentationScreen() {
   const getTextStyles = (highlightWord: { word: string; color: string; styles: string[] }): TextStyle[] => {
     const styles: TextStyle[] = [
       { color: highlightWord.color },
-      // Apply heading styles
       highlightWord.styles.includes('h1') && { 
         fontSize: 40,
         fontWeight: 'bold',
@@ -306,7 +485,6 @@ export default function PresentationScreen() {
         marginVertical: 4,
         includeFontPadding: false
       },
-      // Apply format styles
       highlightWord.styles.includes('bold') && { fontWeight: 'bold' as const },
       highlightWord.styles.includes('italic') && { fontStyle: 'italic' as const },
       highlightWord.styles.includes('underline') && { textDecorationLine: 'underline' as const }
@@ -409,7 +587,6 @@ export default function PresentationScreen() {
     );
   };
 
-  // Update the text expansion toggle to not affect autoplay
   const toggleTextExpansion = () => {
     setIsTextExpanded(!isTextExpanded);
   };
@@ -631,6 +808,132 @@ export default function PresentationScreen() {
             bottom: 0,
             zIndex: 10
           }}>
+            {/* Sliders Panel */}
+            {showSliders && (
+              <Animated.View
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  backgroundColor: 'rgba(0, 0, 0, 0.8)',
+                  padding: 16,
+                  zIndex: 30,
+                  transform: [{ translateY: slideAnim }],
+                }}
+              >
+                {/* Volume Controls with + and - buttons */}
+                <View style={{
+                  marginBottom: 20,
+                }}>
+                  <View style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    marginBottom: 8,
+                  }}>
+                    <IconButton
+                      icon="volume-medium"
+                      iconColor="white"
+                      size={24}
+                      style={{ marginRight: 8 }}
+                    />
+                    <Text style={{ color: 'white', fontSize: 16, fontWeight: 'bold', marginRight: 8 }}>
+                      Volume
+                    </Text>
+                    <Text style={{ color: 'white', fontSize: 14, marginLeft: 'auto' }}>
+                      {Math.round(volume * 100)}%
+                    </Text>
+                  </View>
+                  
+                  <View style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                  }}>
+                    <TouchableOpacity
+                      style={styles.controlButton}
+                      onPress={decreaseVolume}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={styles.buttonText}>-</Text>
+                    </TouchableOpacity>
+                    
+                    <View style={{ flex: 1, marginHorizontal: 12 }}>
+                      <VisualSlider
+                        value={volume}
+                        minimumTrackTintColor="#2196F3"
+                        maximumTrackTintColor="#666"
+                        thumbTintColor="#2196F3"
+                      />
+                    </View>
+                    
+                    <TouchableOpacity
+                      style={styles.controlButton}
+                      onPress={increaseVolume}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={styles.buttonText}>+</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
+                {/* Brightness Controls with + and - buttons */}
+                <View style={{
+                  marginBottom: 12,
+                }}>
+                  <View style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    marginBottom: 8,
+                  }}>
+                    <IconButton
+                      icon="brightness-6"
+                      iconColor="white"
+                      size={24}
+                      style={{ marginRight: 8 }}
+                    />
+                    <Text style={{ color: 'white', fontSize: 16, fontWeight: 'bold', marginRight: 8 }}>
+                      Brightness
+                    </Text>
+                    <Text style={{ color: 'white', fontSize: 14, marginLeft: 'auto' }}>
+                      {Math.round(brightness * 100)}%
+                    </Text>
+                  </View>
+                  
+                  <View style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                  }}>
+                    <TouchableOpacity
+                      style={styles.controlButton}
+                      onPress={decreaseBrightness}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={styles.buttonText}>-</Text>
+                    </TouchableOpacity>
+                    
+                    <View style={{ flex: 1, marginHorizontal: 12 }}>
+                      <VisualSlider
+                        value={brightness}
+                        minimumTrackTintColor="#FF9800"
+                        maximumTrackTintColor="#666"
+                        thumbTintColor="#FF9800"
+                      />
+                    </View>
+                    
+                    <TouchableOpacity
+                      style={styles.controlButton}
+                      onPress={increaseBrightness}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={styles.buttonText}>+</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </Animated.View>
+            )}
+
             <View style={{ 
               position: 'absolute',
               top: 0,
@@ -654,13 +957,22 @@ export default function PresentationScreen() {
               <Text style={{ color: 'white', fontSize: 16 }}>
                 {currentSlide + 1} / {slides.length}
               </Text>
-              <IconButton 
-                icon={isVoiceMuted ? "volume-off" : "volume-high"}
-                iconColor="white"
-                size={28}
-                onPress={toggleVoice}
-                style={{ backgroundColor: 'rgba(0, 0, 0, 0.3)' }}
-              />
+              <View style={{ flexDirection: 'row' }}>
+                <IconButton 
+                  icon={isVoiceMuted ? "volume-off" : "volume-high"}
+                  iconColor="white"
+                  size={28}
+                  onPress={toggleVoice}
+                  style={{ backgroundColor: 'rgba(0, 0, 0, 0.3)' }}
+                />
+                <IconButton 
+                  icon="tune"
+                  iconColor="white"
+                  size={28}
+                  onPress={toggleSliders}
+                  style={{ backgroundColor: 'rgba(0, 0, 0, 0.3)' }}
+                />
+              </View>
             </View>
 
             <View style={{ 
@@ -723,4 +1035,60 @@ export default function PresentationScreen() {
       </TouchableOpacity>
     </View>
   );
-} 
+}
+
+// Styles for the components
+const styles = StyleSheet.create({
+  sliderContainer: {
+    height: 40,
+    justifyContent: 'center',
+    position: 'relative',
+  },
+  track: {
+    height: 8,
+    borderRadius: 4,
+    overflow: 'hidden',
+  },
+  filledTrack: {
+    height: 8,
+    borderRadius: 4,
+    position: 'absolute',
+    left: 0,
+  },
+  thumb: {
+    position: 'absolute',
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: '#fff',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 3,
+    elevation: 5,
+    left: -12, // Half the width to center
+  },
+  controlButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#333',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#555',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 3,
+    elevation: 5,
+  },
+  buttonText: {
+    color: 'white',
+    fontSize: 24,
+    fontWeight: 'bold',
+    textAlign: 'center',
+    lineHeight: 24,
+  }
+});
