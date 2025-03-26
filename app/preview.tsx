@@ -1,12 +1,265 @@
-import { useState, useEffect } from 'react';
-import { StyleSheet, View, Image, Dimensions, Platform } from 'react-native';
-import { Button, Text, IconButton, Portal, Dialog, TextInput } from 'react-native-paper';
+import { useState, useEffect, useCallback } from 'react';
+import { StyleSheet, View, Image, Dimensions, Platform, ScrollView, Alert } from 'react-native';
+import { Button, Text, IconButton, Portal, Dialog, TextInput, MD3Colors } from 'react-native-paper';
 import { router, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Slide } from '../utils/excelProcessor';
 import * as FileSystem from 'expo-file-system';
+import React from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const { width, height } = Dimensions.get('window');
+
+interface SavedSlideSet {
+  id: string;
+  name: string;
+  content: Slide[];
+  createdAt: string;
+}
+
+interface Group {
+  id: string;
+  name: string;
+  slides: SavedSlideSet[];
+  createdAt: string;
+  isFavorite?: boolean;
+}
+
+// Add this new component before the PreviewScreen component
+const SaveDialog = ({ 
+  visible, 
+  onDismiss, 
+  onSave, 
+  initialSlideName = '' 
+}: { 
+  visible: boolean; 
+  onDismiss: () => void; 
+  onSave: (name: string, type: 'single' | 'grouped') => void;
+  initialSlideName?: string;
+}) => {
+  const [slideName, setSlideName] = useState(initialSlideName);
+  const [saveType, setSaveType] = useState<'single' | 'grouped'>('single');
+
+  useEffect(() => {
+    if (visible) {
+      setSlideName(initialSlideName);
+      setSaveType('single');
+    }
+  }, [visible, initialSlideName]);
+
+  const handleDismiss = () => {
+    if (slideName !== initialSlideName) {
+      Alert.alert(
+        'Unsaved Changes',
+        'You have unsaved changes. Do you want to leave?',
+        [
+          {
+            text: 'Cancel',
+            style: 'cancel',
+          },
+          {
+            text: 'Leave',
+            onPress: () => {
+              setSlideName('');
+              setSaveType('single');
+              onDismiss();
+            },
+          },
+        ]
+      );
+    } else {
+      setSlideName('');
+      setSaveType('single');
+      onDismiss();
+    }
+  };
+
+  return (
+    <Dialog visible={visible} onDismiss={handleDismiss}>
+      <Dialog.Title>Save Slides</Dialog.Title>
+      <Dialog.Content>
+        <TextInput
+          label="Name"
+          value={slideName}
+          style={styles.input}
+          mode="outlined"
+          autoFocus
+          placeholder={saveType === 'single' ? "Enter slide name" : "Enter group name"}
+          error={!slideName.trim()}
+          onChangeText={setSlideName}
+          blurOnSubmit={false}
+          autoCapitalize="none"
+          autoCorrect={false}
+          keyboardType="default"
+          returnKeyType="done"
+          enablesReturnKeyAutomatically={true}
+        />
+        <View style={styles.saveTypeContainer}>
+          <Button
+            mode={saveType === 'single' ? 'contained' : 'outlined'}
+            onPress={() => setSaveType('single')}
+            style={styles.saveTypeButton}
+          >
+            Single
+          </Button>
+          <Button
+            mode={saveType === 'grouped' ? 'contained' : 'outlined'}
+            onPress={() => setSaveType('grouped')}
+            style={styles.saveTypeButton}
+          >
+            Group
+          </Button>
+        </View>
+      </Dialog.Content>
+      <Dialog.Actions>
+        <Button onPress={handleDismiss}>Cancel</Button>
+        <Button 
+          onPress={() => onSave(slideName, saveType)}
+          disabled={!slideName.trim()}
+        >
+          {saveType === 'grouped' ? 'Next' : 'Save'}
+        </Button>
+      </Dialog.Actions>
+    </Dialog>
+  );
+};
+
+// Add this new component after the SaveDialog component
+const GroupDialog = ({
+  visible,
+  onDismiss,
+  onSave,
+  existingGroups,
+}: {
+  visible: boolean;
+  onDismiss: () => void;
+  onSave: (groupName: string, groupType: 'new' | 'existing') => void;
+  existingGroups: Group[];
+}) => {
+  const [groupType, setGroupType] = useState<'new' | 'existing' | null>(null);
+  const [groupName, setGroupName] = useState('');
+
+  useEffect(() => {
+    if (visible) {
+      setGroupType(null);
+      setGroupName('');
+    }
+  }, [visible]);
+
+  const handleDismiss = () => {
+    setGroupType(null);
+    setGroupName('');
+    onDismiss();
+  };
+
+  const handleGroupSelect = (type: 'new' | 'existing') => {
+    setGroupType(type);
+    if (type === 'existing' && existingGroups.length === 0) {
+      Alert.alert('No Groups', 'No existing groups found. Please create a new group.');
+      return;
+    }
+  };
+
+  return (
+    <Dialog visible={visible} onDismiss={handleDismiss}>
+      <Dialog.Title>Select Group</Dialog.Title>
+      <Dialog.Content>
+        {!groupType ? (
+          <View style={styles.groupTypeButtons}>
+            <Button
+              mode="contained"
+              onPress={() => handleGroupSelect('new')}
+              style={styles.groupTypeButton}
+            >
+              New Group
+            </Button>
+            <Button
+              mode="outlined"
+              onPress={() => handleGroupSelect('existing')}
+              style={styles.groupTypeButton}
+              disabled={existingGroups.length === 0}
+            >
+              Existing Group
+            </Button>
+          </View>
+        ) : groupType === 'new' ? (
+          <>
+            <TextInput
+              label="New Group Name"
+              value={groupName}
+              onChangeText={setGroupName}
+              style={styles.input}
+              mode="outlined"
+              placeholder="Enter group name"
+              error={!groupName.trim()}
+              blurOnSubmit={false}
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="default"
+              returnKeyType="done"
+              enablesReturnKeyAutomatically={true}
+            />
+            <View style={styles.groupActionButtons}>
+              <Button
+                mode="outlined"
+                onPress={() => {
+                  setGroupType(null);
+                  setGroupName('');
+                }}
+                style={styles.groupActionButton}
+              >
+                Back
+              </Button>
+              <Button
+                mode="contained"
+                onPress={() => onSave(groupName, 'new')}
+                style={styles.groupActionButton}
+                disabled={!groupName.trim()}
+              >
+                Save
+              </Button>
+            </View>
+          </>
+        ) : (
+          <>
+            <View style={styles.existingGroupsList}>
+              {existingGroups.map((group) => (
+                <Button
+                  key={group.id}
+                  mode={groupName === group.name ? 'contained' : 'outlined'}
+                  onPress={() => setGroupName(group.name)}
+                  style={styles.existingGroupButton}
+                >
+                  {group.name}
+                </Button>
+              ))}
+            </View>
+            <View style={styles.groupActionButtons}>
+              <Button
+                mode="outlined"
+                onPress={() => {
+                  setGroupType(null);
+                  setGroupName('');
+                }}
+                style={styles.groupActionButton}
+              >
+                Back
+              </Button>
+              <Button
+                mode="contained"
+                onPress={() => onSave(groupName, 'existing')}
+                style={styles.groupActionButton}
+                disabled={!groupName}
+              >
+                Save
+              </Button>
+            </View>
+          </>
+        )}
+      </Dialog.Content>
+    </Dialog>
+  );
+};
 
 export default function PreviewScreen() {
   const params = useLocalSearchParams();
@@ -15,10 +268,13 @@ export default function PreviewScreen() {
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [showGroupDialog, setShowGroupDialog] = useState(false);
   const [slideName, setSlideName] = useState('');
-  const [groupName, setGroupName] = useState('');
-  const [saveType, setSaveType] = useState<'single' | 'grouped' | null>(null);
   const [imageError, setImageError] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [isFormDirty, setIsFormDirty] = useState(false);
+  const [initialSlideName, setInitialSlideName] = useState('');
+  const [existingGroups, setExistingGroups] = useState<Group[]>([]);
+  const [isEditing, setIsEditing] = useState(false);
+  const [slideSetId, setSlideSetId] = useState<string | null>(null);
 
   useEffect(() => {
     if (params.slides) {
@@ -29,7 +285,15 @@ export default function PreviewScreen() {
         console.error('Error parsing slides:', error);
       }
     }
-  }, [params.slides]);
+
+    // Check if we're editing existing slides
+    if (params.isEditing === 'true') {
+      setIsEditing(true);
+      setSlideSetId(params.slideSetId as string);
+      setSlideName(params.slideName as string);
+      setInitialSlideName(params.slideName as string);
+    }
+  }, [params.slides, params.isEditing, params.slideSetId, params.slideName]);
 
   useEffect(() => {
     if (params.updatedSlide && params.index) {
@@ -53,28 +317,169 @@ export default function PreviewScreen() {
     }
   }, [params.updatedSlide, params.index]);
 
+  // Check if form is dirty (only for slide name)
+  useEffect(() => {
+    const isDirty = slideName !== initialSlideName;
+    setIsFormDirty(isDirty);
+  }, [slideName, initialSlideName]);
+
+  // Set initial values when component mounts
+  useEffect(() => {
+    setInitialSlideName(slideName);
+  }, []);
+
   const handleSave = () => {
-    setShowSaveDialog(true);
-  };
-
-  const handleSaveConfirm = () => {
-    if (!slideName.trim()) return;
-    setShowSaveDialog(false);
-    setShowGroupDialog(true);
-  };
-
-  const handleGroupSelect = (type: 'new' | 'existing') => {
-    if (type === 'new') {
-      setShowGroupDialog(false);
-      // Handle new group creation
+    if (isEditing) {
+      handleUpdateExistingSlides();
     } else {
-      // Show existing groups list
+      setShowSaveDialog(true);
     }
   };
 
-  const handleSaveComplete = () => {
-    // Save the slide and navigate
-    router.push('/my-slides');
+  const handleUpdateExistingSlides = async () => {
+    try {
+      const savedSlides = await AsyncStorage.getItem('singleSlides');
+      if (savedSlides && slideSetId) {
+        const allSlides = JSON.parse(savedSlides);
+        const updatedSlides = allSlides.map((slideSet: SavedSlideSet) => {
+          if (slideSet.id === slideSetId) {
+            return {
+              ...slideSet,
+              content: slides
+            };
+          }
+          return slideSet;
+        });
+        
+        await AsyncStorage.setItem('singleSlides', JSON.stringify(updatedSlides));
+        
+        Alert.alert(
+          'Success',
+          'Slides updated successfully',
+          [
+            {
+              text: 'OK',
+              onPress: () => router.push({
+                pathname: '/my-slides',
+                params: { initialTab: 'single' }
+              })
+            }
+          ]
+        );
+      }
+    } catch (error) {
+      console.error('Error updating slides:', error);
+      Alert.alert('Error', 'Failed to update slides. Please try again later.');
+    }
+  };
+
+  const handleSaveConfirm = async (name: string, type: 'single' | 'grouped') => {
+    if (!name.trim()) {
+      Alert.alert('Error', 'Please enter a name');
+      return;
+    }
+
+    if (type === 'single') {
+      try {
+        const existingSlides = await AsyncStorage.getItem('singleSlides');
+        const savedSlides = existingSlides ? JSON.parse(existingSlides) : [];
+        
+        // Save all slides as a single set
+        const newSlideSet = {
+          id: Date.now().toString(),
+          name: name,
+          content: slides, // Save all slides as an array
+          createdAt: new Date().toISOString()
+        };
+        
+        await AsyncStorage.setItem('singleSlides', JSON.stringify([...savedSlides, newSlideSet]));
+        setShowSaveDialog(false);
+        
+        Alert.alert(
+          'Success',
+          'Slides saved successfully',
+          [
+            {
+              text: 'OK',
+              onPress: () => router.push({
+                pathname: '/my-slides',
+                params: { initialTab: 'single' }
+              })
+            }
+          ]
+        );
+      } catch (error) {
+        console.error('Error saving slides:', error);
+        Alert.alert('Error', 'Failed to save slides. Please try again later.');
+      }
+    } else {
+      // Store the slide name for later use
+      setSlideName(name);
+      setShowSaveDialog(false);
+      setShowGroupDialog(true);
+      try {
+        const savedGroups = await AsyncStorage.getItem('slideGroups');
+        if (savedGroups) {
+          setExistingGroups(JSON.parse(savedGroups));
+        }
+      } catch (error) {
+        console.error('Error fetching groups:', error);
+      }
+    }
+  };
+
+  const handleGroupSave = async (groupName: string, groupType: 'new' | 'existing') => {
+    try {
+      const existingGroups = await AsyncStorage.getItem('slideGroups');
+      const groups: Group[] = existingGroups ? JSON.parse(existingGroups) : [];
+      
+      // Create a new slide set with the name from the first dialog
+      const newSlideSet = {
+        id: Date.now().toString(),
+        name: slideName, // Use the name from the first dialog
+        content: slides, // Save all slides as an array
+        createdAt: new Date().toISOString()
+      };
+      
+      if (groupType === 'new') {
+        // Create new group with the slide set
+        const newGroup: Group = {
+          id: Date.now().toString(),
+          name: groupName,
+          slides: [newSlideSet], // Save as an array with one slide set
+          createdAt: new Date().toISOString()
+        };
+        
+        await AsyncStorage.setItem('slideGroups', JSON.stringify([...groups, newGroup]));
+      } else {
+        // Add slide set to existing group
+        const selectedGroup = groups.find((g: Group) => g.name === groupName);
+        if (selectedGroup) {
+          selectedGroup.slides.push(newSlideSet); // Add the slide set to the group
+          await AsyncStorage.setItem('slideGroups', JSON.stringify(groups));
+        }
+      }
+      
+      setShowGroupDialog(false);
+      setSlideName(''); // Reset the slide name
+      
+      Alert.alert(
+        'Success',
+        'Slides saved to group successfully',
+        [
+          {
+            text: 'OK',
+            onPress: () => router.push({
+              pathname: '/my-slides',
+              params: { initialTab: 'grouped' }
+            })
+          }
+        ]
+      );
+    } catch (error) {
+      console.error('Error saving to group:', error);
+      Alert.alert('Error', 'Failed to save to group. Please try again later.');
+    }
   };
 
   const handleDelete = () => {
@@ -104,7 +509,10 @@ export default function PreviewScreen() {
   const handlePresentation = () => {
     router.push({
       pathname: '/presentation',
-      params: { slides: JSON.stringify(slides) }
+      params: { 
+        slides: JSON.stringify(slides),
+        isSingleSlide: 'false'
+      }
     });
   };
 
@@ -195,54 +603,94 @@ export default function PreviewScreen() {
       </View>
 
       <View style={styles.slideContainer}>
-        {currentSlideData.image === 'No image selected' ? (
-          <View style={styles.noImageContainer}>
-            <Text style={styles.noImageText}>No image selected</Text>
-          </View>
-        ) : (
-          <View style={styles.imageContainer}>
-            <Image
-              source={{ 
-                uri: currentSlideData.image,
-                cache: 'force-cache'
-              }}
-              style={styles.slideImage}
-              resizeMode="contain"
-              onError={handleImageError}
-            />
-            {imageError && (
-              <View style={styles.errorOverlay}>
-                <Text style={styles.errorText}>Error loading image</Text>
-                <Text style={styles.errorPath}>Path: {currentSlideData.image}</Text>
-                <Text style={styles.errorNote}>Platform: {Platform.OS}</Text>
-                <Text style={styles.errorNote}>Location: {FileSystem.documentDirectory}</Text>
+        <View style={styles.sectionContainer}>
+          <Text variant="titleMedium" style={styles.sectionTitle}>Image</Text>
+          {currentSlideData.image === 'No image selected' ? (
+            <View style={styles.noImageContainer}>
+              <IconButton icon="image-off" size={40} iconColor={MD3Colors.error50} />
+              <Text style={styles.noContentText}>Image Not Provided</Text>
+            </View>
+          ) : (
+            <View style={styles.imageContainer}>
+              <Image
+                source={{ 
+                  uri: currentSlideData.image,
+                  cache: 'force-cache'
+                }}
+                style={styles.slideImage}
+                resizeMode="contain"
+                onError={handleImageError}
+              />
+              {imageError && (
+                <View style={styles.errorOverlay}>
+                  <Text style={styles.errorText}>Error loading image</Text>
+                  <Text style={styles.errorPath}>Path: {currentSlideData.image}</Text>
+                  <Text style={styles.errorNote}>Platform: {Platform.OS}</Text>
+                  <Text style={styles.errorNote}>Location: {FileSystem.documentDirectory}</Text>
+                </View>
+              )}
+            </View>
+          )}
+        </View>
+
+        <View style={styles.sectionContainer}>
+          <Text variant="titleMedium" style={styles.sectionTitle}>Text Content</Text>
+          <View style={styles.contentContainer}>
+            {!currentSlideData.text ? (
+              <View style={styles.noContentContainer}>
+                <IconButton icon="text" size={40} iconColor={MD3Colors.error50} />
+                <Text style={styles.noContentText}>Text Not Provided</Text>
               </View>
+            ) : (
+              <ScrollView 
+                style={styles.scrollContent}
+                contentContainerStyle={styles.scrollContentContainer}
+              >
+                <Text style={[
+                  styles.slideText,
+                  currentSlideData.style === 'bold' && styles.boldText,
+                  currentSlideData.style === 'italic' && styles.italicText,
+                ]}>
+                  {currentSlideData.text}
+                </Text>
+                {currentSlideData.highlighted && (
+                  <Text style={styles.highlightedText}>
+                    Highlighted: {currentSlideData.highlighted}
+                  </Text>
+                )}
+              </ScrollView>
             )}
           </View>
-        )}
+        </View>
 
-        <View style={styles.slideContent}>
-          <Text style={[
-            styles.slideText,
-            currentSlideData.style === 'bold' && styles.boldText,
-            currentSlideData.style === 'italic' && styles.italicText,
-          ]}>
-            {currentSlideData.text || 'No text provided'}
-          </Text>
-          {currentSlideData.highlighted && (
-            <Text style={styles.highlightedText}>
-              Highlighted: {currentSlideData.highlighted}
-            </Text>
-          )}
-          {currentSlideData.backgroundVoice && (
-            <Text style={styles.ttsText}>
-              Voice: {currentSlideData.backgroundVoice}
-            </Text>
-          )}
+        <View style={styles.sectionContainer}>
+          <Text variant="titleMedium" style={styles.sectionTitle}>Background Voice</Text>
+          <View style={styles.contentContainer}>
+            {!currentSlideData.backgroundVoice ? (
+              <View style={styles.noContentContainer}>
+                <IconButton icon="microphone-off" size={40} iconColor={MD3Colors.error50} />
+                <Text style={styles.noContentText}>Voice Not Provided</Text>
+              </View>
+            ) : (
+              <ScrollView 
+                style={styles.scrollContent}
+                contentContainerStyle={styles.scrollContentContainer}
+              >
+                <Text style={styles.ttsText}>
+                  {currentSlideData.backgroundVoice}
+                </Text>
+              </ScrollView>
+            )}
+          </View>
         </View>
       </View>
 
       <View style={styles.footer}>
+        <IconButton
+          icon="page-first"
+          onPress={() => setCurrentSlide(0)}
+          disabled={currentSlide === 0}
+        />
         <IconButton
           icon="chevron-left"
           onPress={() => setCurrentSlide(prev => Math.max(0, prev - 1))}
@@ -260,72 +708,27 @@ export default function PreviewScreen() {
           onPress={() => setCurrentSlide(prev => Math.min(slides.length - 1, prev + 1))}
           disabled={currentSlide === slides.length - 1}
         />
+        <IconButton
+          icon="page-last"
+          onPress={() => setCurrentSlide(slides.length - 1)}
+          disabled={currentSlide === slides.length - 1}
+        />
       </View>
 
       <Portal>
-        <Dialog visible={showSaveDialog} onDismiss={() => setShowSaveDialog(false)}>
-          <Dialog.Title>Save Slide</Dialog.Title>
-          <Dialog.Content>
-            <TextInput
-              label="Slide Name"
-              value={slideName}
-              onChangeText={setSlideName}
-              style={styles.input}
-            />
-            <View style={styles.saveTypeContainer}>
-              <Button
-                mode={saveType === 'single' ? 'contained' : 'outlined'}
-                onPress={() => setSaveType('single')}
-                style={styles.saveTypeButton}
-              >
-                Single
-              </Button>
-              <Button
-                mode={saveType === 'grouped' ? 'contained' : 'outlined'}
-                onPress={() => setSaveType('grouped')}
-                style={styles.saveTypeButton}
-              >
-                Grouped
-              </Button>
-            </View>
-          </Dialog.Content>
-          <Dialog.Actions>
-            <Button onPress={() => setShowSaveDialog(false)}>Cancel</Button>
-            <Button onPress={handleSaveConfirm}>Next</Button>
-          </Dialog.Actions>
-        </Dialog>
+        <SaveDialog
+          visible={showSaveDialog}
+          onDismiss={() => setShowSaveDialog(false)}
+          onSave={handleSaveConfirm}
+          initialSlideName=""
+        />
 
-        <Dialog visible={showGroupDialog} onDismiss={() => setShowGroupDialog(false)}>
-          <Dialog.Title>Select Group</Dialog.Title>
-          <Dialog.Content>
-            <TextInput
-              label="New Group Name"
-              value={groupName}
-              onChangeText={setGroupName}
-              style={styles.input}
-            />
-            <View style={styles.groupButtons}>
-              <Button
-                mode="outlined"
-                onPress={() => handleGroupSelect('existing')}
-                style={styles.groupButton}
-              >
-                Existing Group
-              </Button>
-              <Button
-                mode="contained"
-                onPress={() => handleGroupSelect('new')}
-                style={styles.groupButton}
-              >
-                New Group
-              </Button>
-            </View>
-          </Dialog.Content>
-          <Dialog.Actions>
-            <Button onPress={() => setShowGroupDialog(false)}>Cancel</Button>
-            <Button onPress={handleSaveComplete}>Save</Button>
-          </Dialog.Actions>
-        </Dialog>
+        <GroupDialog
+          visible={showGroupDialog}
+          onDismiss={() => setShowGroupDialog(false)}
+          onSave={handleGroupSave}
+          existingGroups={existingGroups}
+        />
 
         <Dialog visible={showDeleteDialog} onDismiss={() => setShowDeleteDialog(false)}>
           <Dialog.Title>Delete Slide</Dialog.Title>
@@ -370,24 +773,46 @@ const styles = StyleSheet.create({
     flex: 1,
     padding: 16,
   },
+  sectionContainer: {
+    marginBottom: 16,
+  },
+  sectionTitle: {
+    marginBottom: 8,
+    color: MD3Colors.primary40,
+    fontWeight: '500',
+  },
+  noContentContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 20,
+    backgroundColor: '#f5f5f5',
+    borderRadius: 8,
+    flexDirection: 'row',
+    gap: 8,
+  },
+  noContentText: {
+    color: MD3Colors.error50,
+    fontSize: 16,
+    fontWeight: '500',
+  },
   imageContainer: {
     width: width * 0.9,
-    height: height * 0.4,
+    height: height * 0.3,
     backgroundColor: '#f5f5f5',
     borderRadius: 8,
     overflow: 'hidden',
     alignSelf: 'center',
-    marginBottom: 16,
   },
   noImageContainer: {
     width: width * 0.9,
-    height: height * 0.4,
+    height: height * 0.3,
     backgroundColor: '#f5f5f5',
     alignItems: 'center',
     justifyContent: 'center',
     alignSelf: 'center',
     borderRadius: 8,
-    marginBottom: 16,
+    flexDirection: 'row',
+    gap: 8,
   },
   slideImage: {
     width: '100%',
@@ -411,19 +836,22 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     opacity: 0.8,
   },
-  noImageText: {
-    color: '#666',
-    fontSize: 16,
-  },
-  slideContent: {
-    padding: 16,
+  contentContainer: {
     backgroundColor: '#f8f8f8',
     borderRadius: 8,
+    minHeight: 100,
+    maxHeight: height * 0.2,
+  },
+  scrollContent: {
+    flex: 1,
+  },
+  scrollContentContainer: {
+    padding: 16,
   },
   slideText: {
     fontSize: 16,
-    marginBottom: 8,
     color: '#333',
+    marginBottom: 8,
   },
   boldText: {
     fontWeight: 'bold',
@@ -454,7 +882,6 @@ const styles = StyleSheet.create({
   ttsText: {
     fontSize: 14,
     color: '#666',
-    marginTop: 8,
   },
   footer: {
     flexDirection: 'row',
@@ -463,30 +890,49 @@ const styles = StyleSheet.create({
     padding: 16,
     borderTopWidth: 1,
     borderTopColor: '#e0e0e0',
+    gap: 8,
   },
   saveButton: {
     borderRadius: 8,
+    flex: 1,
+    marginHorizontal: 8,
   },
   input: {
+    backgroundColor: '#fff',
     marginBottom: 16,
   },
   saveTypeContainer: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     marginBottom: 16,
+    gap: 8,
   },
   saveTypeButton: {
     flex: 1,
-    marginHorizontal: 4,
   },
-  groupButtons: {
+  groupTypeButtons: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  groupTypeButton: {
+    flex: 1,
+  },
+  groupActionButtons: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     marginTop: 16,
+    gap: 8,
   },
-  groupButton: {
+  groupActionButton: {
     flex: 1,
-    marginHorizontal: 4,
+  },
+  existingGroupsList: {
+    gap: 8,
+    marginBottom: 16,
+  },
+  existingGroupButton: {
+    marginBottom: 8,
   },
   errorNote: {
     color: '#fff',

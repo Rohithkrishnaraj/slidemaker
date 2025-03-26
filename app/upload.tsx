@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { StyleSheet, View, ScrollView, Platform } from 'react-native';
+import { StyleSheet, View, ScrollView, Platform, ActivityIndicator } from 'react-native';
 import { Button, Text, Card, Portal, Dialog, DataTable } from 'react-native-paper';
 import { router } from 'expo-router';
 import * as DocumentPicker from 'expo-document-picker';
@@ -21,8 +21,10 @@ interface UploadScreenState {
   selectedImages: ImageInfo[];
   excelFile: string | null;
   loading: boolean;
+  loadingMessage: string;
   error: string | null;
   excelPreview: ExcelPreviewData[] | null;
+  isSelectingFiles: boolean;
 }
 
 export default function UploadScreen() {
@@ -30,18 +32,32 @@ export default function UploadScreen() {
     selectedImages: [],
     excelFile: null,
     loading: false,
+    loadingMessage: '',
     error: null,
-    excelPreview: null
+    excelPreview: null,
+    isSelectingFiles: false
   });
 
   const handleUpload = async () => {
     try {
+      // Set initial loading state for image selection
+      setState(prev => ({ 
+        ...prev, 
+        loading: true,
+        loadingMessage: 'Please select images first...',
+        error: null 
+      }));
+
+      // Wait for 3 seconds before opening image picker
+      await new Promise(resolve => setTimeout(resolve, 3000));
+
       // Request permissions first
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (status !== 'granted') {
         setState(prev => ({ 
           ...prev, 
-          error: 'Permission to access media library is required' 
+          error: 'Permission to access media library is required',
+          loading: false 
         }));
         return;
       }
@@ -57,16 +73,33 @@ export default function UploadScreen() {
       console.log('Image picker result:', imageResult);
       if (imageResult.canceled) {
         console.log('Image selection was canceled');
+        setState(prev => ({ 
+          ...prev, 
+          loading: false,
+          loadingMessage: '' 
+        }));
         return;
       }
 
       if (!imageResult.assets || imageResult.assets.length === 0) {
         setState(prev => ({ 
           ...prev, 
-          error: 'Please select at least one image' 
+          error: 'Please select at least one image',
+          loading: false,
+          loadingMessage: '' 
         }));
         return;
       }
+
+      // Update loading state for file selection
+      setState(prev => ({ 
+        ...prev, 
+        loadingMessage: 'Now select Excel file...',
+        isSelectingFiles: true 
+      }));
+
+      // Wait for 3 seconds before opening file picker
+      await new Promise(resolve => setTimeout(resolve, 3000));
 
       // Convert selected assets to ImageInfo objects with original filenames
       const imageInfos: ImageInfo[] = await Promise.all(imageResult.assets.map(async (asset, index) => {
@@ -115,8 +148,23 @@ export default function UploadScreen() {
       console.log('Excel picker result:', excelResult);
       if (excelResult.canceled || !excelResult.assets || excelResult.assets.length === 0) {
         console.log('Excel selection was canceled or no file was selected');
+        setState(prev => ({ 
+          ...prev, 
+          loading: false,
+          loadingMessage: '',
+          isSelectingFiles: false 
+        }));
         return;
       }
+
+      // Update loading state for processing
+      setState(prev => ({ 
+        ...prev, 
+        loadingMessage: 'Processing files, please wait...' 
+      }));
+
+      // Wait for 3 seconds before processing
+      await new Promise(resolve => setTimeout(resolve, 3000));
 
       const excelUri = excelResult.assets[0].uri;
       console.log('Selected Excel URI:', excelUri);
@@ -182,19 +230,25 @@ export default function UploadScreen() {
 
       console.log('Preview data created:', previewData.length, 'rows');
 
-      // Update state with all the data
+      // Update final state
       setState(prev => ({
         ...prev,
         selectedImages: imageInfos,
         excelFile: excelUri,
-        excelPreview: previewData
+        excelPreview: previewData,
+        loading: false,
+        loadingMessage: '',
+        isSelectingFiles: false
       }));
 
     } catch (error) {
       console.error('Upload error:', error);
       setState(prev => ({ 
         ...prev, 
-        error: error instanceof Error ? error.message : 'Error during upload'
+        error: error instanceof Error ? error.message : 'Error during upload',
+        loading: false,
+        loadingMessage: '',
+        isSelectingFiles: false
       }));
     }
   };
@@ -240,9 +294,17 @@ export default function UploadScreen() {
               onPress={handleUpload}
               style={styles.button}
               icon="upload"
+              disabled={state.loading}
             >
               Select Images & Excel File
             </Button>
+
+            {state.loading && (
+              <View style={styles.loaderContainer}>
+                <ActivityIndicator size="large" color="#007AFF" />
+                <Text style={styles.loaderText}>{state.loadingMessage}</Text>
+              </View>
+            )}
 
             <View style={styles.uploadInfo}>
               {state.selectedImages.length > 0 && (
@@ -382,5 +444,19 @@ const styles = StyleSheet.create({
   },
   errorButton: {
     backgroundColor: '#007bff',
+  },
+  loaderContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginVertical: 16,
+    backgroundColor: '#f8f8f8',
+    padding: 16,
+    borderRadius: 8,
+  },
+  loaderText: {
+    marginTop: 8,
+    fontSize: 14,
+    color: '#666',
+    textAlign: 'center',
   },
 }); 
